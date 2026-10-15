@@ -1,0 +1,29 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "vs2026-release",
+      "displayName": "VS2026 x64 / Ninja / Qt 6.12.0",
+      "generator": "Ninja",
+      "architecture": { "value": "x64", "strategy": "external" },
+      "toolset": { "value": "v145", "strategy": "external" },
+      "environment": { "VSLANG": "1033" },
+      "binaryDir": "${sourceDir}/out/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_PREFIX_PATH": "C:/Qt/6.12.0/msvc2022_64",
+        "CMAKE_CXX_COMPILER": "cl.exe",
+        "BUILD_TESTING": "ON"
+      },
+      "vendor": {
+        "microsoft.com/VisualStudioSettings/CMake/1.0": {
+          "hostOS": [ "Windows" ],
+          "intelliSenseMode": "windows-msvc-x64"
+        }
+      }
+    }
+  ],
+  "buildPresets": [ { "name": "vs2026-release", "configurePreset": "vs2026-release", "jobs": 4 } ],
+  "testPresets": [ { "name": "vs2026-release", "configurePreset": "vs2026-release", "output": { "outputOnFailure": true } } ]
+}
