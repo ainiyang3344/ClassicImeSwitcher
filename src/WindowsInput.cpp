@@ -226,19 +226,3 @@ QString WindowsInput::userSid()
     return result;
 }
 
-bool WindowsInput::requestChinese(const InputProfile &profile, HWND focus, QString *error)
-{
-    if (!profile.isChinese() || !profile.enabled || !profile.layout || !IsWindow(focus)) {
-        *error = QStringLiteral("中文切换目标不可用。"); return false;
-    }
-    ComPtr<ITfInputProcessorProfileMgr> manager;
-    HRESULT hr = CoCreateInstance(CLSID_TF_InputProcessorProfiles, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&manager));
-    if (SUCCEEDED(hr)) hr = manager->ActivateProfile(profile.keyboard ? TF_PROFILETYPE_KEYBOARDLAYOUT : TF_PROFILETYPE_INPUTPROCESSOR,
-        profile.language, profile.clsid, profile.profile, profile.keyboard ? profile.layout : nullptr, TF_IPPMF_FORSESSION);
-    if (FAILED(hr)) { *error = QStringLiteral("激活中文输入法失败（0x%1）。").arg(static_cast<quint32>(hr), 8, 16, u'0'); return false; }
-    if (!PostMessageW(focus, WM_INPUTLANGCHANGEREQUEST, INPUTLANGCHANGE_SYSCHARSET, reinterpret_cast<LPARAM>(profile.layout))) {
-        *error = failure(QStringLiteral("请求中文输入布局")); return false;
-    }
-    return true;
-}
-

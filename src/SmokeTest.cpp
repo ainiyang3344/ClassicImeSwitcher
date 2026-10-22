@@ -18,6 +18,34 @@
 #include <wrl/client.h>
 
 namespace {
+HWND findNativeWindow(const QProcess &process)
+{
+    struct Search { DWORD pid; HWND window; } search{static_cast<DWORD>(process.processId()), nullptr};
+    EnumWindows([](HWND window, LPARAM context) -> BOOL {
+        auto *state = reinterpret_cast<Search *>(context);
+        DWORD pid = 0; GetWindowThreadProcessId(window, &pid);
+        wchar_t name[100]{}; GetClassNameW(window, name, 100);
+        if (pid == state->pid && QString::fromWCharArray(name) == QStringLiteral("LYLab.ClassicIme.NativeInputTarget")) { state->window = window; return FALSE; }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&search));
+    return search.window;
+}
+bool focusNativeWindow(HWND window)
+{
+    if (!IsWindow(window)) return false;
+    const DWORD targetThread = GetWindowThreadProcessId(window, nullptr);
+    const DWORD foregroundThread = GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
+    const DWORD ownThread = GetCurrentThreadId();
+    const bool foregroundAttached = foregroundThread && foregroundThread != ownThread && AttachThreadInput(ownThread, foregroundThread, TRUE);
+    const bool attached = targetThread != ownThread && targetThread != foregroundThread && AttachThreadInput(ownThread, targetThread, TRUE);
+    BringWindowToTop(window);
+    SetForegroundWindow(window);
+    SetActiveWindow(window);
+    SetFocus(FindWindowExW(window, nullptr, L"EDIT", nullptr));
+    if (attached) AttachThreadInput(ownThread, targetThread, FALSE);
+    if (foregroundAttached) AttachThreadInput(ownThread, foregroundThread, FALSE);
+    return GetForegroundWindow() == window;
+}
 struct TestRun : std::enable_shared_from_this<TestRun> {
     QQuickWindow *window = nullptr;
     AppController *controller = nullptr;
@@ -32,6 +60,8 @@ struct TestRun : std::enable_shared_from_this<TestRun> {
     std::unique_ptr<SwitchEngine> engine;
     std::unique_ptr<QProcess> externalProcess;
     HWND externalWindow = nullptr;
+    std::unique_ptr<QProcess> observerProcess;
+    HWND observerWindow = nullptr;
     InputProfile chinese;
     HKL originalLayout = nullptr;
     HWND originalForeground = nullptr;
@@ -41,6 +71,12 @@ struct TestRun : std::enable_shared_from_this<TestRun> {
     bool restoringInput = false;
 
     void finish(bool passed, const QString &error = {}) {
+        if (observerProcess) {
+            if (IsWindow(observerWindow)) PostMessageW(observerWindow, WM_CLOSE, 0, 0);
+            if (!observerProcess->waitForFinished(1000)) { observerProcess->kill(); observerProcess->waitForFinished(1000); }
+            observerProcess.reset(); observerWindow = nullptr;
+            focusNativeWindow(externalWindow);
+        }
         if (engine && (editor || externalWindow) && originalLayout && targetLayout() != originalLayout && !restoringInput) {
             restoringInput = true;
             engine->request(topWindow());
@@ -221,6 +257,13 @@ struct TestRun : std::enable_shared_from_this<TestRun> {
     }
     void beginExternal() {
         if (!controller->ready()) { finish(false, QStringLiteral("Switch targets are not ready.")); return; }
+        BOOL perWindow = FALSE; HKL defaultLayout = nullptr;
+        const bool settingsRead = SystemParametersInfoW(SPI_GETTHREADLOCALINPUTSETTINGS, 0, &perWindow, 0)
+            && SystemParametersInfoW(SPI_GETDEFAULTINPUTLANG, 0, &defaultLayout, 0);
+        report.insert("windowIsolationSettings", QJsonObject{{"read", settingsRead}, {"perWindow", perWindow != FALSE}, {"defaultLayout", layoutString(defaultLayout)}});
+        if (!settingsRead || !perWindow || layoutString(defaultLayout) != QStringLiteral("04090409")) {
+            finish(false, QStringLiteral("Window isolation requires the US default keyboard and per-window input settings.")); return;
+        }
         for (const auto &profile : controller->nativeProfiles()) if (profile.id == controller->chineseId()) chinese = profile;
         originalForeground = GetForegroundWindow();
         window->hide();
@@ -230,31 +273,12 @@ struct TestRun : std::enable_shared_from_this<TestRun> {
         QTimer::singleShot(350, qApp, [self = shared_from_this()] { self->prepareExternal(0); });
     }
     void prepareExternal(int attempt) {
-        struct Search { DWORD pid; HWND window; } search{static_cast<DWORD>(externalProcess->processId()), nullptr};
-        EnumWindows([](HWND window, LPARAM context) -> BOOL {
-            auto *state = reinterpret_cast<Search *>(context);
-            DWORD pid = 0; GetWindowThreadProcessId(window, &pid);
-            wchar_t name[100]{}; GetClassNameW(window, name, 100);
-            if (pid == state->pid && QString::fromWCharArray(name) == QStringLiteral("LYLab.ClassicIme.NativeInputTarget")) { state->window = window; return FALSE; }
-            return TRUE;
-        }, reinterpret_cast<LPARAM>(&search));
-        if (!search.window) {
+        externalWindow = findNativeWindow(*externalProcess);
+        if (!externalWindow) {
             if (attempt >= 15) { finish(false, QStringLiteral("Native test target did not open.")); return; }
             QTimer::singleShot(100, qApp, [self = shared_from_this(), attempt] { self->prepareExternal(attempt + 1); }); return;
         }
-        externalWindow = search.window;
-        const DWORD targetThread = GetWindowThreadProcessId(externalWindow, nullptr);
-        const DWORD foregroundThread = GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
-        const DWORD ownThread = GetCurrentThreadId();
-        const bool foregroundAttached = foregroundThread && foregroundThread != ownThread && AttachThreadInput(ownThread, foregroundThread, TRUE);
-        const bool attached = targetThread != ownThread && targetThread != foregroundThread && AttachThreadInput(ownThread, targetThread, TRUE);
-        BringWindowToTop(externalWindow);
-        SetForegroundWindow(externalWindow);
-        SetActiveWindow(externalWindow);
-        const HWND child = FindWindowExW(externalWindow, nullptr, L"EDIT", nullptr);
-        SetFocus(child);
-        if (attached) AttachThreadInput(ownThread, targetThread, FALSE);
-        if (foregroundAttached) AttachThreadInput(ownThread, foregroundThread, FALSE);
+        if (!focusNativeWindow(externalWindow)) { finish(false, QStringLiteral("Could not focus the native test target.")); return; }
         engine = std::make_unique<SwitchEngine>(nullptr, true);
         QString error;
         if (!engine->startEngine(&error)) { finish(false, error); return; }
@@ -262,6 +286,37 @@ struct TestRun : std::enable_shared_from_this<TestRun> {
         QObject::connect(engine.get(), &SwitchEngine::result, qApp, [self = shared_from_this()](bool ok, const QString &) { ++self->switchResults; if (!ok) self->switchError = true; }, Qt::QueuedConnection);
         QObject::connect(engine.get(), &SwitchEngine::testTrace, qApp, [self = shared_from_this()](const QString &message) { self->keyTrace.append(message); }, Qt::QueuedConnection);
         prepareInput();
+    }
+    bool observerIsEnglish() const {
+        return IsWindow(observerWindow) && layoutString(GetKeyboardLayout(GetWindowThreadProcessId(observerWindow, nullptr))) == QStringLiteral("04090409");
+    }
+    void prepareObserver(int attempt) {
+        observerWindow = findNativeWindow(*observerProcess);
+        if (!observerWindow) {
+            if (attempt >= 15) { finish(false, QStringLiteral("Second native test window did not open.")); return; }
+            QTimer::singleShot(100, qApp, [self = shared_from_this(), attempt] { self->prepareObserver(attempt + 1); }); return;
+        }
+        const bool passed = observerIsEnglish() && targetLayout() == chinese.layout;
+        steps.append(QJsonObject{{"operation", "newWindowDefaultsToUS"}, {"passed", passed},
+            {"newWindowLayout", layoutString(GetKeyboardLayout(GetWindowThreadProcessId(observerWindow, nullptr)))}, {"existingWindowLayout", layoutString(targetLayout())}});
+        if (!passed) { finish(false, QStringLiteral("New window did not default to US or changed the existing Chinese window.")); return; }
+        if (!focusNativeWindow(externalWindow)) { finish(false, QStringLiteral("Could not return to the first test window.")); return; }
+        QTimer::singleShot(200, qApp, [self = shared_from_this()] { self->switchStep(0); });
+    }
+    void checkWindowMemory() {
+        if (!focusNativeWindow(observerWindow)) { finish(false, QStringLiteral("Could not focus the second test window.")); return; }
+        QTimer::singleShot(200, qApp, [self = shared_from_this()] {
+            const bool passed = GetForegroundWindow() == self->observerWindow && self->observerIsEnglish() && self->targetLayout() == self->chinese.layout;
+            self->steps.append(QJsonObject{{"operation", "returnToEnglishWindow"}, {"passed", passed}});
+            if (!passed) { self->finish(false, QStringLiteral("Windows did not retain independent input layouts.")); return; }
+            if (!focusNativeWindow(self->externalWindow)) { self->finish(false, QStringLiteral("Could not return to the Chinese test window.")); return; }
+            QTimer::singleShot(200, qApp, [self] {
+                const bool retained = self->targetFocused() && self->targetLayout() == self->chinese.layout && self->observerIsEnglish();
+                self->steps.append(QJsonObject{{"operation", "returnToChineseWindow"}, {"passed", retained}});
+                if (!retained) { self->finish(false, QStringLiteral("Returning to an existing window lost its input layout.")); return; }
+                self->typeChinese();
+            });
+        });
     }
     void beginSwitch() {
         if (!controller->ready()) { finish(false, QStringLiteral("Switch targets are not ready.")); return; }
@@ -298,8 +353,12 @@ struct TestRun : std::enable_shared_from_this<TestRun> {
         originalLayout = targetLayout();
         if (targetLayout() != chinese.layout) engine->request(topWindow());
         QTimer::singleShot(450, qApp, [self = shared_from_this()] {
-            if (self->switchError) { self->finish(false, QStringLiteral("Could not prepare Chinese input through the system switcher.")); return; }
+            if (self->switchError || self->targetLayout() != self->chinese.layout) { self->finish(false, QStringLiteral("Could not prepare Chinese input through the system switcher.")); return; }
             self->switchResults = 0;
+            if (self->externalWindow) {
+                self->observerProcess = std::make_unique<QProcess>(); self->observerProcess->start(self->externalProcess->program());
+                QTimer::singleShot(350, qApp, [self] { self->prepareObserver(0); }); return;
+            }
             self->switchStep(0);
         });
     }
@@ -326,7 +385,13 @@ struct TestRun : std::enable_shared_from_this<TestRun> {
             self->steps.append(QJsonObject{{"operation", expectEnglish ? "hotkeyToUS" : "hotkeyToChinese"},
                 {"passed", passed}, {"layout", actual}, {"confirmedSwitches", self->switchResults}, {"holdMs", step == 0 ? 2300 : 150}, {"modifiersReleased", modifiersReleased}, {"spaceLeak", !self->targetText().isEmpty()}, {"inputState", self->inputState()}});
             if (!passed) { self->finish(false, QStringLiteral("Hotkey switching or repeat suppression failed.")); return; }
-            if (step == 1) self->typeChinese();
+            if (self->externalWindow) {
+                const bool isolated = self->observerIsEnglish();
+                self->steps.append(QJsonObject{{"operation", "backgroundWindowRemainsUS"}, {"passed", isolated}});
+                if (!isolated) { self->finish(false, QStringLiteral("Switching the foreground window changed the background window.")); return; }
+            }
+            if (step == 1 && self->externalWindow) self->checkWindowMemory();
+            else if (step == 1) self->typeChinese();
             else if (step < 2) self->switchStep(step + 1);
             else self->typeEnglish();
         });

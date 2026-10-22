@@ -133,13 +133,8 @@ bool SwitchEngine::sendCycle()
     if (!m_cyclesSent) m_started = GetTickCount64();
     ++m_cyclesSent;
     if (m_testInjectedKeys) emit testTrace(QStringLiteral("%1 cycle=%2 before=%3 target=%4 ctrl=%5").arg(GetTickCount64()).arg(m_cyclesSent).arg(m_cycleBefore, layoutString(m_target)).arg((GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0));
-    if (LOWORD(reinterpret_cast<quintptr>(m_target)) != 0x0409) {
-        InputProfile chinese;
-        { std::lock_guard guard(m_configMutex); chinese = m_chinese; }
-        QString error;
-        if (WindowsInput::requestChinese(chinese, m_focus, &error)) return true;
-        m_focus = nullptr; emit result(false, error); return false;
-    }
+    // Use the foreground window's system switcher in both directions. Session
+    // profile activation would also change other windows and their initial IME.
     std::vector<INPUT> inputs;
     auto append = [&inputs](WORD key, bool up) {
         INPUT input{}; input.type = INPUT_KEYBOARD; input.ki.wVk = key;

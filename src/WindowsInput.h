@@ -23,7 +23,6 @@ public:
     static QList<HKL> loadedLayouts();
     static HWND focusedWindow(HWND foreground);
     static QString userSid();
-    static bool requestChinese(const InputProfile &profile, HWND focus, QString *error);
 private:
     HMODULE m_module = nullptr;
 };
