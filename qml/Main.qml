@@ -416,7 +416,7 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             ColumnLayout {
                                 Label { text: "登录 Windows 时启动"; color: "#344054" }
-                                Label { text: "启动后留在托盘，沿用上次的切换设置"; color: "#667085"; font.pixelSize: 12 }
+                                Label { text: "以管理员权限启动后留在托盘，沿用上次设置"; color: "#667085"; font.pixelSize: 12 }
                             }
                             Item { Layout.fillWidth: true }
                             Switch { checked: window.backend.autoStart; onToggled: window.backend.autoStart = checked }

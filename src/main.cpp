@@ -85,16 +85,26 @@ int main(int argc, char **argv)
         const QString stateDirectory = testing ? temporary.path() : QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
         QLocalServer server;
         const QString serverName = QStringLiteral("LYLab.ClassicImeSwitcher.v1.") + WindowsInput::userSid();
+        std::unique_ptr<void, decltype(&CloseHandle)> instanceMutex(nullptr, &CloseHandle);
         if (!testing) {
-            server.setSocketOptions(QLocalServer::UserAccessOption);
-            if (!server.listen(serverName)) {
-                QLocalSocket existing; existing.connectToServer(serverName);
-                if (existing.waitForConnected(500)) { existing.write("show"); existing.waitForBytesWritten(500); return 0; }
-                QLocalServer::removeServer(serverName);
-                if (!server.listen(serverName)) return 1;
+            // Named pipes allow multiple server instances on Windows. Use an
+            // atomic process-lifetime guard before starting the keyboard hook.
+            const QString mutexName = QStringLiteral("Local\\") + serverName;
+            instanceMutex.reset(CreateMutexW(nullptr, FALSE, reinterpret_cast<LPCWSTR>(mutexName.utf16())));
+            const DWORD mutexError = GetLastError();
+            if (!instanceMutex) return 1;
+            if (mutexError == ERROR_ALREADY_EXISTS) {
+                if (!parser.isSet(QStringLiteral("background"))) {
+                    QLocalSocket existing; existing.connectToServer(serverName);
+                    if (existing.waitForConnected(500)) { existing.write("show"); existing.waitForBytesWritten(500); }
+                }
+                return 0;
             }
+            server.setSocketOptions(QLocalServer::UserAccessOption);
+            if (!server.listen(serverName)) return 1;
         }
         AppController controller(stateDirectory, mode != QStringLiteral("management") && testing);
+        if (!testing) controller.migrateAutoStart();
         const bool hasTray = !testing && QSystemTrayIcon::isSystemTrayAvailable();
         auto warnings = std::make_shared<QStringList>();
         QQmlApplicationEngine engine;

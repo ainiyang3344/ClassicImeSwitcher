@@ -49,7 +49,7 @@ try {
             [void][IO.Directory]::CreateDirectory($output)
             $executable = Join-Path $folder 'app\bin\ClassicImeSwitcher.exe'
             $action = New-ScheduledTaskAction -Execute $executable -Argument ($flag+' "'+$output+'"') -WorkingDirectory (Split-Path $executable -Parent)
-            $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Limited
+            $principal = New-ScheduledTaskPrincipal -UserId $account -LogonType Interactive -RunLevel Highest
             $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
             Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings | Out-Null
             Start-ScheduledTask -TaskName $taskName

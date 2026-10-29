@@ -50,6 +50,7 @@ public:
     void setEnabled(bool enabled);
     void setShortcut(int shortcut);
     void setAutoStart(bool enabled);
+    void migrateAutoStart();
     void setCloseToTray(bool enabled);
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void addUS();

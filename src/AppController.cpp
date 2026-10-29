@@ -1,4 +1,5 @@
 ﻿#include "AppController.h"
+#include "StartupTask.h"
 #include <QCoreApplication>
 #include <QDesktopServices>
 #include <QDir>
@@ -130,18 +131,28 @@ void AppController::setShortcut(int shortcut)
 void AppController::updateEngine() { m_engine.configure(m_enabled && ready(), m_shortcut, selectedChinese(), enabledChineseCount()); }
 bool AppController::autoStart() const
 {
-    if (m_safeMode) return false;
+    return !m_safeMode && StartupTask::enabled();
+}
+void AppController::migrateAutoStart()
+{
+    if (m_safeMode) return;
     QSettings run(QStringLiteral("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"), QSettings::NativeFormat);
-    return run.value(QStringLiteral("ClassicImeSwitcher")).toString() == QStringLiteral("\"%1\" --background").arg(QDir::toNativeSeparators(QCoreApplication::applicationFilePath()));
+    if (run.contains(QStringLiteral("ClassicImeSwitcher"))) setAutoStart(true);
 }
 void AppController::setAutoStart(bool enabled)
 {
     if (m_safeMode) return;
-    QSettings run(QStringLiteral("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"), QSettings::NativeFormat);
-    if (enabled) run.setValue(QStringLiteral("ClassicImeSwitcher"), QStringLiteral("\"%1\" --background").arg(QDir::toNativeSeparators(QCoreApplication::applicationFilePath())));
-    else run.remove(QStringLiteral("ClassicImeSwitcher"));
-    run.sync();
-    if (run.status() != QSettings::NoError) announce(QStringLiteral("开机启动设置保存失败。"), true);
+    QString error;
+    if (!StartupTask::setEnabled(enabled, &error)) {
+        announce(error, true);
+    } else {
+        // Preserve the old entry if registering the elevated task fails.
+        QSettings run(QStringLiteral("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"), QSettings::NativeFormat);
+        run.remove(QStringLiteral("ClassicImeSwitcher"));
+        run.sync();
+        if (run.status() != QSettings::NoError) announce(QStringLiteral("旧开机启动项清理失败，请重新设置开机启动。"), true);
+        else announce(enabled ? QStringLiteral("已设置登录后以管理员权限启动。") : QStringLiteral("已关闭开机启动。"));
+    }
     emit settingsChanged();
 }
 bool AppController::closeToTray() const { return m_settings.value(QStringLiteral("window/closeToTray"), true).toBool(); }
